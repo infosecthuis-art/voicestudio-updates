@@ -57,6 +57,29 @@ def module_command(args):
   return [args[0],'-m',entries[args[1].replace('\\','/')],*args[2:]]
  return args
 
+
+def configure_low_memory(engine):
+ """Avoid 4 Windows worker processes and 32 prefetched training batches."""
+ import ast
+ path=Path(engine)/'train/train.py'
+ source=path.read_text(encoding='utf-8')
+ tree=ast.parse(source)
+ calls=[node for node in ast.walk(tree) if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='DataLoader']
+ if len(calls)!=1:raise RuntimeError('Onverwachte RVC-versie: DataLoader niet eenduidig gevonden. Geen training gestart.')
+ call=calls[0];original=ast.get_source_segment(source,call)
+ target={'num_workers':0,'pin_memory':False,'persistent_workers':False,'prefetch_factor':None}
+ keys={item.arg for item in call.keywords}
+ if not set(target)<=keys:raise RuntimeError('Onverwachte laadinstellingen. Geen training gestart.')
+ for item in call.keywords:
+  if item.arg in target:item.value=ast.Constant(target[item.arg])
+ new=ast.unparse(ast.fix_missing_locations(call))
+ changed=source.replace(original,new,1)
+ ast.parse(changed)
+ backup=path.with_suffix('.py.before-low-memory')
+ if not backup.exists():backup.write_text(source,encoding='utf-8')
+ temporary=path.with_suffix('.py.new');temporary.write_text(changed,encoding='utf-8');os.replace(temporary,path)
+ return target
+
 class Manager:
  def __init__(self,root):
   self.root=root;self.events=queue.Queue();self.process=None;self.busy=False;self.cancel=threading.Event()
@@ -80,7 +103,7 @@ class Manager:
   epochrow=ttk.Frame(frame);epochrow.pack(fill='x')
   ttk.Label(epochrow,text='Trainingsrondes:').pack(side='left')
   self.epochs=tk.StringVar(value='100');ttk.Spinbox(epochrow,from_=10,to=300,increment=10,textvariable=self.epochs,width=6).pack(side='left',padx=8)
-  ttk.Label(epochrow,text='GTX 1080: batch 1, volledige precisie, geen dataset in videogeheugen',wraplength=650).pack(side='left')
+  ttk.Label(epochrow,text='16 GB RAM-modus: één laadproces, batch 1, volledige precisie',wraplength=650).pack(side='left')
   self.status=tk.StringVar(value='Begin met stap 1. De installatie downloadt meerdere GB en kan lang duren.')
   ttk.Label(frame,textvariable=self.status,wraplength=800).pack(fill='x',pady=(14,8))
   self.progress=ttk.Progressbar(frame,mode='indeterminate');self.progress.pack(fill='x')
@@ -173,6 +196,8 @@ class Manager:
 
  def train(self):
   if not (HOME/'installed.json').is_file() or not (HOME/'dataset/voice.wav').is_file():raise RuntimeError('Voer eerst stap 1 en 2 uit.')
+  configure_low_memory(CODE)
+  self.emit('16 GB RAM-modus: geen extra laadprocessen, geen vooruitbuffer, geen vastgezet RAM. Batch blijft 1.')
   exp=CODE/'logs'/EXPERIMENT;exp.mkdir(parents=True,exist_ok=True)
   self.run([PY,'train/preprocess.py',HOME/'dataset','40000','2',exp,'False','3.7'])
   self.run([PY,'train/dataset/extract_f0.py','cuda','1','0','0',exp,'false'])
@@ -235,4 +260,5 @@ class Manager:
 
 if __name__=='__main__':
  root=tk.Tk();Manager(root);root.mainloop()
+
 
