@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.9.2"
+VERSION = "1.9.3"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -153,7 +153,7 @@ class Studio:
         self.busy = False
         self.last_output = None
         self.last_preview = None
-        window.title('VoiceStudio 1.9.2 — Jouw voice-overstudio')
+        window.title('VoiceStudio 1.9.3 — Jouw voice-overstudio')
         window.geometry('1160x800')
         window.minsize(980, 700)
         window.configure(bg='#0b1120')
@@ -189,7 +189,7 @@ class Studio:
         ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
         self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
         ttk.Button(header,text='RVC-stemmodel',command=self.open_rvc).pack(side='right',padx=(0,8))
-        ttk.Label(header,text='LOKAAL  •  v1.9.2',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        ttk.Label(header,text='LOKAAL  •  v1.9.3',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
         body = ttk.Frame(outer); body.pack(fill='both',expand=True)
         body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
         editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
@@ -664,6 +664,7 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
 
 
