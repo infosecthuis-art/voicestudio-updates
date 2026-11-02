@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.5"
+VERSION = "1.6"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -69,6 +69,22 @@ def make_combined_reference(reference):
     result.with_suffix('.json').write_text(json.dumps({'source':str(path),'starts_seconds':starts,'seconds_per_clip':2,'note':'Experimental mixed reference; no training or emotion analysis'}),encoding='utf-8')
     return str(result)
 
+
+def split_script(text, max_words=45):
+    """Pack short sentences together while keeping every word and a hard limit."""
+    if max_words < 1: raise ValueError('max_words must be positive')
+    chunks, current = [], []
+    for sentence in re.split(r'(?<=[.!?])\s+|\n+', text):
+        words = sentence.split()
+        if not words: continue
+        if current and len(current)+len(words)>max_words:
+            chunks.append(' '.join(current)); current=[]
+        while len(words)>max_words:
+            chunks.append(' '.join(words[:max_words])); words=words[max_words:]
+        current.extend(words)
+    if current: chunks.append(' '.join(current))
+    return chunks
+
 class Studio:
     def __init__(self, window):
         self.window = window
@@ -78,7 +94,8 @@ class Studio:
         self.events = queue.Queue()
         self.busy = False
         self.last_output = None
-        window.title('VoiceStudio 1.5 — Jouw voice-overstudio')
+        self.last_preview = None
+        window.title('VoiceStudio 1.6 — Jouw voice-overstudio')
         window.geometry('1160x800')
         window.minsize(980, 700)
         window.configure(bg='#0b1120')
@@ -113,7 +130,7 @@ class Studio:
         ttk.Label(branding,text='VoiceStudio',font=('Segoe UI',26,'bold')).pack(anchor='w')
         ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
         self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
-        ttk.Label(header,text='LOKAAL  •  v1.5',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        ttk.Label(header,text='LOKAAL  •  v1.6',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
         body = ttk.Frame(outer); body.pack(fill='both',expand=True)
         body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
         editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
@@ -182,6 +199,8 @@ class Studio:
         footer=ttk.Frame(outer,style='Card.TFrame',padding=16);footer.pack(fill='x',pady=(16,0))
         action=ttk.Frame(footer,style='Card.TFrame');action.pack(fill='x')
         self.button=ttk.Button(action,text='Maak voice-over',style='Primary.TButton',command=self.generate);self.button.pack(side='left')
+        self.preview_button=ttk.Button(action,text='Luistervoorbeeld',command=self.preview);self.preview_button.pack(side='left',padx=(10,0))
+        ttk.Button(action,text='Stop',width=4,command=self.stop_preview).pack(side='left',padx=(6,0))
         self.listen_button=ttk.Button(action,text='Beluister resultaat',command=self.play_output,state='disabled');self.listen_button.pack(side='left',padx=10)
         ttk.Button(action,text='Open uitvoermap',command=self.open_output).pack(side='right')
         self.status=tk.StringVar(value='Klaar voor je volgende verhaal. Kies je stem en vul je script in.')
@@ -190,6 +209,47 @@ class Studio:
         self.status_label.bind('<Configure>',lambda event:self.status_label.configure(wraplength=max(200,event.width-8)))
         self.progress=ttk.Progressbar(footer,mode='indeterminate');self.progress.pack(fill='x')
         window.after(100,self.poll)
+
+    def preview(self):
+        if self.busy: return
+        if not self.commit_expression():
+            messagebox.showerror('Expressie','Vul een geldig getal tussen 0,25 en 1,00 in.'); return
+        reference=self.reference.get().strip()
+        if not Path(reference).is_file():
+            messagebox.showerror('Stemvoorbeeld','Kies eerst een bestaand stemvoorbeeld.'); return
+        try: text=self.text.get('sel.first','sel.last').strip()
+        except tk.TclError: text=self.text.get('1.0','end').strip()
+        if not text:
+            messagebox.showinfo('Tekst ontbreekt','Vul eerst Engelse tekst in.'); return
+        sample=split_script(text,max_words=25)[0]
+        stat=Path(reference).stat()
+        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get()]).encode()).hexdigest()[:24]
+        folder=ROOT/'cache'/'previews';folder.mkdir(parents=True,exist_ok=True)
+        destination=folder/(key+'.wav')
+        if destination.is_file() and destination.with_suffix('.ready').is_file():
+            self.last_preview=str(destination)
+            self.status.set('Luistervoorbeeld afspelen · maximaal 25 woorden · gekozen stem en expressie')
+            self.play_preview(); return
+        self.stop_preview()
+        self.save_draft()
+        self.busy=True
+        self.button.configure(state='disabled');self.preview_button.configure(state='disabled');self.update_button.configure(state='disabled')
+        self.progress.configure(mode='indeterminate',value=0);self.progress.start()
+        self.status.set('Kort luistervoorbeeld maken… De eerste keer moet het model laden.')
+        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview'),daemon=True).start()
+
+    def play_preview(self):
+        try:
+            import winsound
+            winsound.PlaySound(self.last_preview,winsound.SND_FILENAME|winsound.SND_ASYNC)
+        except Exception as exc:
+            messagebox.showerror('Voorbeeld niet afgespeeld',str(exc))
+
+    def stop_preview(self):
+        try:
+            import winsound
+            winsound.PlaySound(None,0)
+        except (ImportError,RuntimeError): pass
 
     def script_changed(self, event=None):
         if event is not None and not self.text.edit_modified(): return
@@ -247,6 +307,7 @@ class Studio:
             messagebox.showinfo('Nog bezig', 'Wacht tot de voice-over klaar is voordat je afsluit.')
             return
         self.save_draft()
+        self.stop_preview()
         self.window.destroy()
 
     def update(self):
@@ -256,6 +317,8 @@ class Studio:
         self.busy = True
         self.button.configure(state='disabled')
         self.update_button.configure(state='disabled')
+        self.preview_button.configure(state='disabled')
+        self.stop_preview()
         self.progress.start()
         self.save_draft()
         self.progress.configure(mode='indeterminate',value=0)
@@ -317,11 +380,13 @@ class Studio:
         self.save_draft()
         self.update_button.configure(state='disabled')
         self.progress.configure(mode='indeterminate',value=0)
+        self.preview_button.configure(state='disabled')
+        self.stop_preview()
         self.button.configure(state='disabled'); self.progress.start()
         self.status.set('Model laden… De eerste keer kan dit enkele minuten duren.')
         threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get()), daemon=True).start()
 
-    def worker(self, text, reference, destination, device, expression, multi_reference=False):
+    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full"):
         try:
             if multi_reference:
                 self.events.put(('status', 'Drie plekken uit de opname verzamelen…'))
@@ -339,12 +404,7 @@ class Studio:
                 self.model = ChatterboxTTS.from_pretrained(device=device)
                 self.loaded_device = device
                 self.condition_key = None
-            # Short chunks reduce runaway generation; concatenate with a short pause.
-            sentences = re.split(r'(?<=[.!?])\s+|\n+', text)
-            chunks = []
-            for sentence in sentences:
-                words = sentence.split()
-                chunks.extend(' '.join(words[i:i+45]) for i in range(0,len(words),45))
+            chunks = split_script(text)
             started = time.perf_counter()
             audio = []
             stat = Path(reference).stat()
@@ -363,8 +423,12 @@ class Studio:
                     audio.append(wav)
             torchaudio.save(destination, torch.cat(audio,dim=-1), self.model.sr)
             elapsed = time.perf_counter() - started
-            self.events.put(('output',destination))
-            self.events.put(('done',f'Opname klaar · {elapsed:.1f} sec generatie · {Path(destination).name}'))
+            if job_type == 'preview':
+                Path(destination).with_suffix('.ready').write_text('complete',encoding='utf-8')
+                self.events.put(('preview_done',destination))
+            else:
+                self.events.put(('output',destination))
+                self.events.put(('done',f'Opname klaar · {elapsed:.1f} sec generatie · {Path(destination).name}'))
         except Exception:
             error = traceback.format_exc()
             (ROOT/'error.log').write_text(error,encoding='utf-8')
@@ -385,7 +449,7 @@ class Studio:
                         self.progress.stop()
                         self.progress.configure(mode='determinate',maximum=100,value=100*(int(match[1])-1)/max(1,int(match[2])))
                     continue
-                self.busy = False; self.update_button.configure(state='normal'); self.progress.stop(); self.button.configure(state='normal')
+                self.busy = False; self.update_button.configure(state='normal'); self.preview_button.configure(state='normal'); self.progress.stop(); self.button.configure(state='normal')
                 if kind == 'update_ready':
                     try:
                         interpreter = Path(sys.executable).with_name('pythonw.exe')
@@ -395,7 +459,12 @@ class Studio:
                         continue
                     self.window.destroy()
                     return
-                if kind == 'current':
+                if kind == 'preview_done':
+                    self.last_preview=value
+                    self.progress.configure(mode='determinate',value=100)
+                    self.status.set('Luistervoorbeeld klaar · pas de expressie aan of maak je volledige voice-over')
+                    self.play_preview()
+                elif kind == 'current':
                     self.status.set(value)
                     messagebox.showinfo('Update',value)
                 elif kind == 'done':
@@ -411,5 +480,6 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
 
