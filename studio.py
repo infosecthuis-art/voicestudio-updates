@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.7"
+VERSION = "1.8"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -94,6 +94,27 @@ def apply_volume(wav, percent):
     if peak > 0.99: result = result * (0.99/peak)
     return result
 
+
+def narration_plan(text, storyteller=False):
+    """Return text chunks with silence before each chunk, preserving all words.
+
+    Story mode uses paragraph boundaries only: no semantic/emotion analysis.
+    Single newlines remain ordinary line breaks; blank lines define paragraphs.
+    """
+    if not storyteller:
+        return [(chunk,0.0 if i==0 else 0.18) for i,chunk in enumerate(split_script(text))]
+    plan=[]
+    for paragraph in re.split(r'\n\s*\n',text):
+        for index,chunk in enumerate(split_script(paragraph)):
+            pause=0.0 if not plan else (0.50 if index==0 else 0.18)
+            plan.append((chunk,pause))
+    return plan
+
+def preview_script(text, limit=25):
+    tokens=list(re.finditer(r'\S+',text))
+    if not tokens:return ''
+    return text[:tokens[min(limit,len(tokens))-1].end()].strip()
+
 class Studio:
     def __init__(self, window):
         self.window = window
@@ -104,7 +125,7 @@ class Studio:
         self.busy = False
         self.last_output = None
         self.last_preview = None
-        window.title('VoiceStudio 1.7 — Jouw voice-overstudio')
+        window.title('VoiceStudio 1.8 — Jouw voice-overstudio')
         window.geometry('1160x800')
         window.minsize(980, 700)
         window.configure(bg='#0b1120')
@@ -139,7 +160,7 @@ class Studio:
         ttk.Label(branding,text='VoiceStudio',font=('Segoe UI',26,'bold')).pack(anchor='w')
         ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
         self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
-        ttk.Label(header,text='LOKAAL  •  v1.7',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        ttk.Label(header,text='LOKAAL  •  v1.8',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
         body = ttk.Frame(outer); body.pack(fill='both',expand=True)
         body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
         editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
@@ -185,6 +206,10 @@ class Studio:
         ttk.Checkbutton(side,text='Meerdere plekken gebruiken (proef)',variable=self.multi_reference).pack(anchor='w',pady=(8,18))
         ttk.Separator(side).pack(fill='x',pady=(0,16))
         ttk.Label(side,text='Voordracht',style='Heading.TLabel').pack(anchor='w')
+        self.storyteller=tk.BooleanVar(value=False)
+        ttk.Button(side,text='Storyteller instellen',command=self.apply_storyteller).pack(fill='x',pady=(10,4))
+        ttk.Checkbutton(side,text='Vertelpauzes tussen alinea’s',variable=self.storyteller).pack(anchor='w')
+        ttk.Label(side,text='Startpreset voor verhalen. Gebruik een lege regel voor een alinea.',style='Muted.TLabel',wraplength=265).pack(anchor='w',pady=(2,6))
         ttk.Label(side,text='Expressie',style='Card.TLabel').pack(anchor='w',pady=(14,0))
         self.expression=tk.DoubleVar(value=0.5); self.expression_value=tk.StringVar(value='0.50')
         self.expression_scale=tk.Scale(side,from_=0.25,to=1.0,resolution=0.01,bigincrement=0.01,
@@ -252,6 +277,7 @@ class Studio:
             except (ValueError,TypeError): value=default
             value=max(low,min(high,value));var.set(value);display.set(fmt % value)
         self.multi_reference.set(bool(preferences.get('multi_reference',False)))
+        self.storyteller.set(bool(preferences.get('storyteller',False)))
         device=preferences.get('device','cuda')
         self.device.set(device if device in ('cuda','cpu') else 'cuda')
 
@@ -272,8 +298,19 @@ class Studio:
             value=float(fmt % value);variable.set(value);display.set(fmt % value)
         return True
 
+    def apply_storyteller(self):
+        if self.busy:
+            messagebox.showinfo('Nog bezig','Laat de huidige opname eerst afronden.');return
+        self.set_expression(0.60)
+        self.variation.set(0.65);self.variation_value.set('0.65')
+        self.volume.set(100.0);self.volume_value.set('100')
+        self.storyteller.set(True)
+        self.save_preferences()
+        self.status.set('Storyteller ingesteld · expressie 0,60 · variatie 0,65 · langere pauze bij lege regels. Probeer Luistervoorbeeld.')
+
     def reset_controls(self):
         self.set_expression(0.5)
+        self.storyteller.set(False)
         self.volume.set(100.0);self.volume_value.set('100')
         self.variation.set(0.8);self.variation_value.set('0.80')
         self.save_preferences()
@@ -282,7 +319,7 @@ class Studio:
         try:
             settings={'reference':self.reference.get(),'expression':self.expression.get(),
                       'volume':self.volume.get(),'variation':self.variation.get(),
-                      'device':self.device.get(),'multi_reference':self.multi_reference.get()}
+                      'device':self.device.get(),'multi_reference':self.multi_reference.get(),'storyteller':self.storyteller.get()}
             temporary=ROOT/'settings.json.new'
             temporary.write_text(json.dumps(settings),encoding='utf-8')
             os.replace(temporary,ROOT/'settings.json')
@@ -299,9 +336,9 @@ class Studio:
         except tk.TclError: text=self.text.get('1.0','end').strip()
         if not text:
             messagebox.showinfo('Tekst ontbreekt','Vul eerst Engelse tekst in.'); return
-        sample=split_script(text,max_words=25)[0]
+        sample=preview_script(text,limit=25)
         stat=Path(reference).stat()
-        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get(),self.volume.get(),self.variation.get()]).encode()).hexdigest()[:24]
+        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get(),self.volume.get(),self.variation.get(),self.storyteller.get()]).encode()).hexdigest()[:24]
         folder=ROOT/'cache'/'previews';folder.mkdir(parents=True,exist_ok=True)
         destination=folder/(key+'.wav')
         if destination.is_file() and destination.with_suffix('.ready').is_file():
@@ -314,7 +351,7 @@ class Studio:
         self.button.configure(state='disabled');self.preview_button.configure(state='disabled');self.update_button.configure(state='disabled')
         self.progress.configure(mode='indeterminate',value=0);self.progress.start()
         self.status.set('Kort luistervoorbeeld maken… De eerste keer moet het model laden.')
-        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview',self.volume.get(),self.variation.get()),daemon=True).start()
+        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview',self.volume.get(),self.variation.get(),self.storyteller.get()),daemon=True).start()
 
     def play_preview(self):
         try:
@@ -463,9 +500,9 @@ class Studio:
         self.stop_preview()
         self.button.configure(state='disabled'); self.progress.start()
         self.status.set('Model laden… De eerste keer kan dit enkele minuten duren.')
-        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get(),'full',self.volume.get(),self.variation.get()), daemon=True).start()
+        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get(),'full',self.volume.get(),self.variation.get(),self.storyteller.get()), daemon=True).start()
 
-    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full", volume=100.0, variation=0.8):
+    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full", volume=100.0, variation=0.8, storyteller=False):
         try:
             if multi_reference:
                 self.events.put(('status', 'Drie plekken uit de opname verzamelen…'))
@@ -483,7 +520,8 @@ class Studio:
                 self.model = ChatterboxTTS.from_pretrained(device=device)
                 self.loaded_device = device
                 self.condition_key = None
-            chunks = split_script(text)
+            plan = narration_plan(text,storyteller)
+            chunks = [chunk for chunk,pause in plan]
             started = time.perf_counter()
             audio = []
             stat = Path(reference).stat()
@@ -498,7 +536,7 @@ class Studio:
                     self.events.put(('status',f'Fragment {i+1} van {len(chunks)} maken…'))
                     wav = self.model.generate(chunk, audio_prompt_path=None if reuse else reference, exaggeration=expression, cfg_weight=0.3, temperature=variation).detach().cpu()
                     if wav.ndim == 1: wav = wav.unsqueeze(0)
-                    if audio: audio.append(torch.zeros(wav.shape[0], int(self.model.sr*0.18)))
+                    if audio: audio.append(torch.zeros(wav.shape[0], int(self.model.sr*plan[i][1])))
                     audio.append(wav)
             torchaudio.save(destination, apply_volume(torch.cat(audio,dim=-1),volume), self.model.sr)
             elapsed = time.perf_counter() - started
@@ -559,6 +597,7 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
 
 
