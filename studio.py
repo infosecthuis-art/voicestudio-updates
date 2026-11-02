@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.3"
+VERSION = "1.4"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -77,13 +77,13 @@ class Studio:
         self.condition_key = None
         self.events = queue.Queue()
         self.busy = False
-        window.title('VoiceStudio 1.3 — Local English Narration')
+        window.title('VoiceStudio 1.4 — Local English Narration')
         window.protocol('WM_DELETE_WINDOW', self.close)
         window.geometry('850x690')
         frame = ttk.Frame(window, padding=20)
         frame.pack(fill='both', expand=True)
         header = ttk.Frame(frame); header.pack(fill='x')
-        ttk.Label(header, text='VoiceStudio 1.3', font=('Segoe UI', 24, 'bold')).pack(side='left')
+        ttk.Label(header, text='VoiceStudio 1.4', font=('Segoe UI', 24, 'bold')).pack(side='left')
         self.update_button = ttk.Button(header, text='Update', command=self.update)
         self.update_button.pack(side='right')
         ttk.Label(frame, text='Engelse voice-overs • lokaal • WAV-export').pack(anchor='w', pady=(0,15))
@@ -108,14 +108,45 @@ class Studio:
         ttk.Label(controls, text='Expressie:').pack(side='left')
         self.expression = tk.DoubleVar(value=0.5)
         self.expression_value = tk.StringVar(value='0.50')
-        ttk.Scale(controls, from_=0.25, to=1.0, variable=self.expression, command=lambda v: self.expression_value.set(f'{float(v):.2f}')).pack(side='left', fill='x', expand=True)
-        ttk.Label(controls, textvariable=self.expression_value, width=5).pack(side='left')
+        ttk.Button(controls, text='−', width=3, command=lambda: self.set_expression(self.expression.get()-0.01)).pack(side='left', padx=(4,0))
+        self.expression_scale = tk.Scale(
+            controls, from_=0.25, to=1.0, resolution=0.01, bigincrement=0.01,
+            orient='horizontal', showvalue=False, variable=self.expression,
+            command=self.expression_slid, highlightthickness=0, sliderlength=24,
+            length=280, takefocus=True)
+        self.expression_scale.pack(side='left', fill='x', expand=True, padx=4)
+        ttk.Button(controls, text='+', width=3, command=lambda: self.set_expression(self.expression.get()+0.01)).pack(side='left')
+        self.expression_input = ttk.Spinbox(
+            controls, from_=0.25, to=1.0, increment=0.01, format='%.2f', width=6,
+            textvariable=self.expression_value, command=self.commit_expression)
+        self.expression_input.pack(side='left', padx=(8,0))
+        self.expression_input.bind('<Return>', lambda event: self.commit_expression())
+        self.expression_input.bind('<FocusOut>', lambda event: self.commit_expression())
         self.button = ttk.Button(frame, text='Maak voice-over en sla op', command=self.generate)
         self.button.pack(fill='x', pady=15)
         self.status = tk.StringVar(value='Kies je stemvoorbeeld. De eerste generatie downloadt het model naar deze map.')
         ttk.Label(frame, textvariable=self.status, wraplength=790).pack(anchor='w')
         self.progress = ttk.Progressbar(frame, mode='indeterminate'); self.progress.pack(fill='x', pady=10)
         window.after(100, self.poll)
+
+    def set_expression(self, value):
+        value = round(max(0.25, min(1.0, float(value))), 2)
+        self.expression.set(value)
+        self.expression_value.set(f'{value:.2f}')
+
+    def expression_slid(self, value):
+        self.expression_value.set(f'{float(value):.2f}')
+
+    def commit_expression(self):
+        import math
+        try:
+            value = float(self.expression_value.get().replace(',', '.'))
+            if not math.isfinite(value): raise ValueError('Ongeldig getal')
+        except (ValueError, tk.TclError):
+            self.expression_value.set(f'{self.expression.get():.2f}')
+            return False
+        self.set_expression(value)
+        return True
 
     def close(self):
         if self.busy:
@@ -176,6 +207,8 @@ class Studio:
 
     def generate(self):
         if self.busy: return
+        if not self.commit_expression():
+            messagebox.showerror('Expressie', 'Vul een getal tussen 0,25 en 1,00 in.'); return
         text = self.text.get('1.0','end').strip()
         reference = self.reference.get().strip()
         if not text or not Path(reference).is_file():
@@ -266,3 +299,4 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
