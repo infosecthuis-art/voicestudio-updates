@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.6"
+VERSION = "1.7"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -85,6 +85,15 @@ def split_script(text, max_words=45):
     if current: chunks.append(' '.join(current))
     return chunks
 
+
+def apply_volume(wav, percent):
+    """Apply output gain once; cap peaks above full scale without hard clipping."""
+    if float(percent) == 100.0: return wav
+    result = wav * (float(percent)/100.0)
+    peak = float(result.abs().max().item())
+    if peak > 0.99: result = result * (0.99/peak)
+    return result
+
 class Studio:
     def __init__(self, window):
         self.window = window
@@ -95,7 +104,7 @@ class Studio:
         self.busy = False
         self.last_output = None
         self.last_preview = None
-        window.title('VoiceStudio 1.6 — Jouw voice-overstudio')
+        window.title('VoiceStudio 1.7 — Jouw voice-overstudio')
         window.geometry('1160x800')
         window.minsize(980, 700)
         window.configure(bg='#0b1120')
@@ -130,7 +139,7 @@ class Studio:
         ttk.Label(branding,text='VoiceStudio',font=('Segoe UI',26,'bold')).pack(anchor='w')
         ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
         self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
-        ttk.Label(header,text='LOKAAL  •  v1.6',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        ttk.Label(header,text='LOKAAL  •  v1.7',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
         body = ttk.Frame(outer); body.pack(fill='both',expand=True)
         body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
         editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
@@ -164,8 +173,11 @@ class Studio:
         ttk.Label(side,text='02  Je stem',style='Heading.TLabel').pack(anchor='w')
         ttk.Label(side,text='Je vaste stemvoorbeeld',style='Muted.TLabel').pack(anchor='w',pady=(16,7))
         self.reference=tk.StringVar()
-        try: self.reference.set(json.loads((ROOT/'settings.json').read_text())['reference'])
-        except (OSError,ValueError,KeyError): pass
+        try:
+            preferences=json.loads((ROOT/'settings.json').read_text())
+            if not isinstance(preferences,dict): preferences={}
+        except (OSError,ValueError): preferences={}
+        self.reference.set(str(preferences.get('reference','')))
         ttk.Entry(side,textvariable=self.reference,width=26).pack(fill='x')
         ttk.Button(side,text='Kies stemvoorbeeld',command=self.choose).pack(fill='x',pady=(8,8))
         ttk.Label(side,text='Helder Engels, één spreker, zonder muziek.',style='Muted.TLabel',wraplength=270).pack(anchor='w')
@@ -191,6 +203,23 @@ class Studio:
         self.expression_input.bind('<FocusOut>',lambda event:self.commit_expression())
         ttk.Button(exact,text='+',width=3,command=lambda:self.set_expression(self.expression.get()+0.01)).pack(side='right')
         ttk.Label(side,text='Tip: begin met 0,65 voor meer expressie.',style='Muted.TLabel',wraplength=270).pack(anchor='w',pady=(0,12))
+        self.volume=tk.DoubleVar(value=100.0);self.volume_value=tk.StringVar(value='100')
+        self.variation=tk.DoubleVar(value=0.8);self.variation_value=tk.StringVar(value='0.80')
+        for label,variable,display,low,high,step,digits,caption in [
+            ('Volume (%)',self.volume,self.volume_value,0,150,1,'%.0f','100% = origineel · pieken worden begrensd'),
+            ('Variatie',self.variation,self.variation_value,0.3,1.2,0.01,'%.2f','Links: voorspelbaarder · rechts: vrijer')]:
+            ttk.Label(side,text=label,style='Card.TLabel').pack(anchor='w',pady=(12,2))
+            line=ttk.Frame(side,style='Card.TFrame');line.pack(fill='x')
+            tk.Scale(line,from_=low,to=high,resolution=step,bigincrement=step,orient='horizontal',showvalue=False,
+                variable=variable,command=lambda value,d=display,f=digits:d.set(f % float(value)),
+                bg='#141e30',fg='#cad5e7',troughcolor='#2b3c56',activebackground='#b3a6ff',highlightthickness=0,
+                relief='flat',borderwidth=0,sliderrelief='flat',sliderlength=24,length=155).pack(side='left',fill='x',expand=True)
+            entry=ttk.Spinbox(line,from_=low,to=high,increment=step,format=digits,width=6,textvariable=display,command=self.commit_sound_controls)
+            entry.pack(side='right',padx=(8,0))
+            entry.bind('<Return>',lambda event:self.commit_sound_controls())
+            entry.bind('<FocusOut>',lambda event:self.commit_sound_controls())
+            ttk.Label(side,text=caption,style='Muted.TLabel',wraplength=265).pack(anchor='w')
+        ttk.Button(side,text='Standaardinstellingen',command=self.reset_controls).pack(fill='x',pady=(14,4))
         device_row=ttk.Frame(side,style='Card.TFrame');device_row.pack(fill='x',pady=(8,0))
         ttk.Label(device_row,text='Rekenen',style='Card.TLabel').pack(side='left')
         self.device=tk.StringVar(value='cuda')
@@ -208,12 +237,61 @@ class Studio:
         self.status_label.pack(fill='x',pady=(14,8))
         self.status_label.bind('<Configure>',lambda event:self.status_label.configure(wraplength=max(200,event.width-8)))
         self.progress=ttk.Progressbar(footer,mode='indeterminate');self.progress.pack(fill='x')
+        self.restore_controls(preferences)
         window.after(100,self.poll)
+
+    def restore_controls(self, preferences):
+        import math
+        for key,var,display,default,low,high,fmt in [
+            ('expression',self.expression,self.expression_value,0.5,0.25,1.0,'%.2f'),
+            ('volume',self.volume,self.volume_value,100.0,0,150,'%.0f'),
+            ('variation',self.variation,self.variation_value,0.8,0.3,1.2,'%.2f')]:
+            try:
+                value=float(preferences.get(key,default))
+                if not math.isfinite(value): value=default
+            except (ValueError,TypeError): value=default
+            value=max(low,min(high,value));var.set(value);display.set(fmt % value)
+        self.multi_reference.set(bool(preferences.get('multi_reference',False)))
+        device=preferences.get('device','cuda')
+        self.device.set(device if device in ('cuda','cpu') else 'cuda')
+
+    def commit_sound_controls(self):
+        import math
+        values=[]
+        for variable,display,low,high,fmt in [
+            (self.volume,self.volume_value,0,150,'%.0f'),
+            (self.variation,self.variation_value,0.3,1.2,'%.2f')]:
+            try:
+                value=float(display.get().replace(',','.'))
+                if not math.isfinite(value): raise ValueError('Ongeldig getal')
+            except (ValueError,tk.TclError):
+                display.set(fmt % variable.get())
+                return False
+            values.append((variable,display,max(low,min(high,value)),fmt))
+        for variable,display,value,fmt in values:
+            value=float(fmt % value);variable.set(value);display.set(fmt % value)
+        return True
+
+    def reset_controls(self):
+        self.set_expression(0.5)
+        self.volume.set(100.0);self.volume_value.set('100')
+        self.variation.set(0.8);self.variation_value.set('0.80')
+        self.save_preferences()
+
+    def save_preferences(self):
+        try:
+            settings={'reference':self.reference.get(),'expression':self.expression.get(),
+                      'volume':self.volume.get(),'variation':self.variation.get(),
+                      'device':self.device.get(),'multi_reference':self.multi_reference.get()}
+            temporary=ROOT/'settings.json.new'
+            temporary.write_text(json.dumps(settings),encoding='utf-8')
+            os.replace(temporary,ROOT/'settings.json')
+        except (OSError,tk.TclError): pass
 
     def preview(self):
         if self.busy: return
-        if not self.commit_expression():
-            messagebox.showerror('Expressie','Vul een geldig getal tussen 0,25 en 1,00 in.'); return
+        if not self.commit_expression() or not self.commit_sound_controls():
+            messagebox.showerror('Expressie','Controleer de getallen bij expressie, volume en variatie.'); return
         reference=self.reference.get().strip()
         if not Path(reference).is_file():
             messagebox.showerror('Stemvoorbeeld','Kies eerst een bestaand stemvoorbeeld.'); return
@@ -223,7 +301,7 @@ class Studio:
             messagebox.showinfo('Tekst ontbreekt','Vul eerst Engelse tekst in.'); return
         sample=split_script(text,max_words=25)[0]
         stat=Path(reference).stat()
-        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get()]).encode()).hexdigest()[:24]
+        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get(),self.volume.get(),self.variation.get()]).encode()).hexdigest()[:24]
         folder=ROOT/'cache'/'previews';folder.mkdir(parents=True,exist_ok=True)
         destination=folder/(key+'.wav')
         if destination.is_file() and destination.with_suffix('.ready').is_file():
@@ -236,7 +314,7 @@ class Studio:
         self.button.configure(state='disabled');self.preview_button.configure(state='disabled');self.update_button.configure(state='disabled')
         self.progress.configure(mode='indeterminate',value=0);self.progress.start()
         self.status.set('Kort luistervoorbeeld maken… De eerste keer moet het model laden.')
-        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview'),daemon=True).start()
+        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview',self.volume.get(),self.variation.get()),daemon=True).start()
 
     def play_preview(self):
         try:
@@ -260,6 +338,7 @@ class Studio:
         self.text.edit_modified(False)
 
     def save_draft(self):
+        self.save_preferences()
         try: (ROOT/'draft.txt').write_text(self.text.get('1.0','end-1c'),encoding='utf-8')
         except OSError: pass
 
@@ -363,12 +442,12 @@ class Studio:
         path = filedialog.askopenfilename(filetypes=[('Audio','*.wav *.mp3 *.flac'), ('Alle bestanden','*.*')])
         if path:
             self.reference.set(path)
-            (ROOT/'settings.json').write_text(json.dumps({'reference':path}), encoding='utf-8')
+            self.save_preferences()
 
     def generate(self):
         if self.busy: return
-        if not self.commit_expression():
-            messagebox.showerror('Expressie', 'Vul een getal tussen 0,25 en 1,00 in.'); return
+        if not self.commit_expression() or not self.commit_sound_controls():
+            messagebox.showerror('Expressie', 'Controleer de getallen bij expressie, volume en variatie.'); return
         text = self.text.get('1.0','end').strip()
         reference = self.reference.get().strip()
         if not text or not Path(reference).is_file():
@@ -384,9 +463,9 @@ class Studio:
         self.stop_preview()
         self.button.configure(state='disabled'); self.progress.start()
         self.status.set('Model laden… De eerste keer kan dit enkele minuten duren.')
-        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get()), daemon=True).start()
+        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get(),'full',self.volume.get(),self.variation.get()), daemon=True).start()
 
-    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full"):
+    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full", volume=100.0, variation=0.8):
         try:
             if multi_reference:
                 self.events.put(('status', 'Drie plekken uit de opname verzamelen…'))
@@ -417,11 +496,11 @@ class Studio:
                     self.condition_key = key
                 for i, chunk in enumerate(chunks):
                     self.events.put(('status',f'Fragment {i+1} van {len(chunks)} maken…'))
-                    wav = self.model.generate(chunk, audio_prompt_path=None if reuse else reference, exaggeration=expression, cfg_weight=0.3).detach().cpu()
+                    wav = self.model.generate(chunk, audio_prompt_path=None if reuse else reference, exaggeration=expression, cfg_weight=0.3, temperature=variation).detach().cpu()
                     if wav.ndim == 1: wav = wav.unsqueeze(0)
                     if audio: audio.append(torch.zeros(wav.shape[0], int(self.model.sr*0.18)))
                     audio.append(wav)
-            torchaudio.save(destination, torch.cat(audio,dim=-1), self.model.sr)
+            torchaudio.save(destination, apply_volume(torch.cat(audio,dim=-1),volume), self.model.sr)
             elapsed = time.perf_counter() - started
             if job_type == 'preview':
                 Path(destination).with_suffix('.ready').write_text('complete',encoding='utf-8')
@@ -480,6 +559,7 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
 
 
