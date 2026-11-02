@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.4"
+VERSION = "1.5"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -77,57 +77,151 @@ class Studio:
         self.condition_key = None
         self.events = queue.Queue()
         self.busy = False
-        window.title('VoiceStudio 1.4 — Local English Narration')
+        self.last_output = None
+        window.title('VoiceStudio 1.5 — Jouw voice-overstudio')
+        window.geometry('1160x800')
+        window.minsize(980, 700)
+        window.configure(bg='#0b1120')
         window.protocol('WM_DELETE_WINDOW', self.close)
-        window.geometry('850x690')
-        frame = ttk.Frame(window, padding=20)
-        frame.pack(fill='both', expand=True)
-        header = ttk.Frame(frame); header.pack(fill='x')
-        ttk.Label(header, text='VoiceStudio 1.4', font=('Segoe UI', 24, 'bold')).pack(side='left')
-        self.update_button = ttk.Button(header, text='Update', command=self.update)
-        self.update_button.pack(side='right')
-        ttk.Label(frame, text='Engelse voice-overs • lokaal • WAV-export').pack(anchor='w', pady=(0,15))
-        self.reference = tk.StringVar()
-        try:
-            self.reference.set(json.loads((ROOT/'settings.json').read_text())['reference'])
-        except (OSError, ValueError, KeyError):
-            pass
-        row = ttk.Frame(frame); row.pack(fill='x')
-        ttk.Entry(row, textvariable=self.reference).pack(side='left', fill='x', expand=True)
-        ttk.Button(row, text='Kies stemvoorbeeld', command=self.choose).pack(side='right')
-        ttk.Label(frame, text='Gebruik een helder Engels fragment van circa 10–20 seconden, zonder muziek.').pack(anchor='w', pady=5)
-        self.multi_reference = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text='Meerdere plekken uit het bestand gebruiken (proef)', variable=self.multi_reference).pack(anchor='w')
-        self.text = tk.Text(frame, wrap='word', height=16, font=('Segoe UI', 12), undo=True)
-        self.text.pack(fill='both', expand=True, pady=10)
-        self.text.insert('1.0', 'Every great story begins with a single moment. This is where ours begins.')
-        controls = ttk.Frame(frame); controls.pack(fill='x')
-        self.device = tk.StringVar(value='cuda')
-        ttk.Label(controls, text='Rekenen:').pack(side='left')
-        ttk.Combobox(controls, textvariable=self.device, values=['cuda','cpu'], state='readonly', width=8).pack(side='left', padx=8)
-        ttk.Label(controls, text='Expressie:').pack(side='left')
-        self.expression = tk.DoubleVar(value=0.5)
-        self.expression_value = tk.StringVar(value='0.50')
-        ttk.Button(controls, text='−', width=3, command=lambda: self.set_expression(self.expression.get()-0.01)).pack(side='left', padx=(4,0))
-        self.expression_scale = tk.Scale(
-            controls, from_=0.25, to=1.0, resolution=0.01, bigincrement=0.01,
-            orient='horizontal', showvalue=False, variable=self.expression,
-            command=self.expression_slid, highlightthickness=0, sliderlength=24,
-            length=280, takefocus=True)
-        self.expression_scale.pack(side='left', fill='x', expand=True, padx=4)
-        ttk.Button(controls, text='+', width=3, command=lambda: self.set_expression(self.expression.get()+0.01)).pack(side='left')
-        self.expression_input = ttk.Spinbox(
-            controls, from_=0.25, to=1.0, increment=0.01, format='%.2f', width=6,
-            textvariable=self.expression_value, command=self.commit_expression)
-        self.expression_input.pack(side='left', padx=(8,0))
-        self.expression_input.bind('<Return>', lambda event: self.commit_expression())
-        self.expression_input.bind('<FocusOut>', lambda event: self.commit_expression())
-        self.button = ttk.Button(frame, text='Maak voice-over en sla op', command=self.generate)
-        self.button.pack(fill='x', pady=15)
-        self.status = tk.StringVar(value='Kies je stemvoorbeeld. De eerste generatie downloadt het model naar deze map.')
-        ttk.Label(frame, textvariable=self.status, wraplength=790).pack(anchor='w')
-        self.progress = ttk.Progressbar(frame, mode='indeterminate'); self.progress.pack(fill='x', pady=10)
-        window.after(100, self.poll)
+        window.option_add('*Font', ('Segoe UI', 10))
+        style = ttk.Style(window)
+        style.theme_use('clam')
+        style.configure('.', background='#0b1120', foreground='#e6edf7', font=('Segoe UI', 10))
+        style.configure('TFrame', background='#0b1120')
+        style.configure('Card.TFrame', background='#141e30')
+        style.configure('TLabel', background='#0b1120', foreground='#e6edf7')
+        style.configure('Card.TLabel', background='#141e30', foreground='#e6edf7')
+        style.configure('Muted.TLabel', background='#141e30', foreground='#a7b6cc', font=('Segoe UI', 9))
+        style.configure('Heading.TLabel', background='#141e30', foreground='#f4f7ff', font=('Segoe UI', 13, 'bold'))
+        style.configure('TButton', background='#23334c', foreground='#e6edf7', borderwidth=0, padding=(12,9))
+        style.map('TButton', background=[('active','#344b6b'),('disabled','#192438')], foreground=[('disabled','#73839b')])
+        style.configure('Primary.TButton', background='#8b7cf8', foreground='#ffffff', font=('Segoe UI',11,'bold'), padding=(16,13))
+        style.map('Primary.TButton', background=[('active','#a195ff'),('disabled','#35405d')], foreground=[('disabled','#96a4ba')])
+        style.configure('TEntry', fieldbackground='#0c1424', foreground='#e6edf7', insertcolor='#ffffff', bordercolor='#30425d', padding=8)
+        style.configure('TSpinbox', fieldbackground='#0c1424', foreground='#e6edf7', insertcolor='#ffffff', arrowcolor='#d5dded', padding=6)
+        style.configure('TCombobox', fieldbackground='#0c1424', foreground='#e6edf7', arrowcolor='#d5dded', padding=6)
+        style.map('TCombobox', fieldbackground=[('readonly','#0c1424')], foreground=[('readonly','#e6edf7')])
+        window.option_add('*TCombobox*Listbox.background','#142035')
+        window.option_add('*TCombobox*Listbox.foreground','#e6edf7')
+        style.configure('TCheckbutton', background='#141e30', foreground='#cad5e7', padding=(0,5))
+        style.map('TCheckbutton',background=[('active','#141e30')],foreground=[('disabled','#73839b')])
+        style.configure('Horizontal.TProgressbar', background='#8b7cf8', troughcolor='#223047', borderwidth=0, thickness=7)
+        style.configure('Vertical.TScrollbar', background='#33435c', troughcolor='#0e1728', borderwidth=0, arrowcolor='#a7b6cc')
+        outer = ttk.Frame(window, padding=(24,20)); outer.pack(fill='both',expand=True)
+        header = ttk.Frame(outer); header.pack(fill='x',pady=(0,20))
+        branding = ttk.Frame(header); branding.pack(side='left')
+        ttk.Label(branding,text='VoiceStudio',font=('Segoe UI',26,'bold')).pack(anchor='w')
+        ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
+        self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
+        ttk.Label(header,text='LOKAAL  •  v1.5',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        body = ttk.Frame(outer); body.pack(fill='both',expand=True)
+        body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
+        editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
+        editor.rowconfigure(2,weight=1); editor.columnconfigure(0,weight=1)
+        title = ttk.Frame(editor,style='Card.TFrame'); title.grid(row=0,column=0,columnspan=2,sticky='ew')
+        ttk.Label(title,text='01  Je script',style='Heading.TLabel').pack(side='left')
+        ttk.Button(title,text='Tekst openen',command=self.import_text).pack(side='right')
+        ttk.Label(editor,text='Plak je Engelse tekst en geef je verhaal een stem.',style='Muted.TLabel').grid(row=1,column=0,columnspan=2,sticky='w',pady=(8,14))
+        self.text = tk.Text(editor,wrap='word',height=12,width=40,font=('Segoe UI',12),undo=True,
+                            bg='#0e1728',fg='#e6edf7',insertbackground='#b6a9ff',selectbackground='#514882',
+                            relief='flat',borderwidth=0,padx=16,pady=16,spacing1=3,spacing3=5)
+        self.text.grid(row=2,column=0,sticky='nsew')
+        scroll=ttk.Scrollbar(editor,orient='vertical',command=self.text.yview); scroll.grid(row=2,column=1,sticky='ns')
+        self.text.configure(yscrollcommand=scroll.set)
+        self.script_stats=tk.StringVar(value='0 woorden')
+        ttk.Label(editor,textvariable=self.script_stats,style='Muted.TLabel').grid(row=3,column=0,columnspan=2,sticky='w',pady=(12,0))
+        self.text.bind('<<Modified>>',self.script_changed)
+        try: draft=(ROOT/'draft.txt').read_text(encoding='utf-8')
+        except OSError: draft='Every great story begins with a single moment. This is where ours begins.'
+        self.text.insert('1.0',draft)
+        self.text.edit_modified(False); self.script_changed()
+        side_shell=ttk.Frame(body,style='Card.TFrame');side_shell.grid(row=0,column=1,sticky='nsew')
+        side_canvas=tk.Canvas(side_shell,bg='#141e30',highlightthickness=0,width=310,height=350)
+        side_scroll=ttk.Scrollbar(side_shell,orient='vertical',command=side_canvas.yview)
+        side_scroll.pack(side='right',fill='y');side_canvas.pack(side='left',fill='both',expand=True)
+        side_canvas.configure(yscrollcommand=side_scroll.set)
+        side=ttk.Frame(side_canvas,style='Card.TFrame',padding=18)
+        side_window=side_canvas.create_window((0,0),window=side,anchor='nw')
+        side.bind('<Configure>',lambda event:side_canvas.configure(scrollregion=side_canvas.bbox('all')))
+        side_canvas.bind('<Configure>',lambda event:side_canvas.itemconfigure(side_window,width=event.width))
+        ttk.Label(side,text='02  Je stem',style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(side,text='Je vaste stemvoorbeeld',style='Muted.TLabel').pack(anchor='w',pady=(16,7))
+        self.reference=tk.StringVar()
+        try: self.reference.set(json.loads((ROOT/'settings.json').read_text())['reference'])
+        except (OSError,ValueError,KeyError): pass
+        ttk.Entry(side,textvariable=self.reference,width=26).pack(fill='x')
+        ttk.Button(side,text='Kies stemvoorbeeld',command=self.choose).pack(fill='x',pady=(8,8))
+        ttk.Label(side,text='Helder Engels, één spreker, zonder muziek.',style='Muted.TLabel',wraplength=270).pack(anchor='w')
+        self.multi_reference=tk.BooleanVar(value=False)
+        ttk.Checkbutton(side,text='Meerdere plekken gebruiken (proef)',variable=self.multi_reference).pack(anchor='w',pady=(8,18))
+        ttk.Separator(side).pack(fill='x',pady=(0,16))
+        ttk.Label(side,text='Voordracht',style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(side,text='Expressie',style='Card.TLabel').pack(anchor='w',pady=(14,0))
+        self.expression=tk.DoubleVar(value=0.5); self.expression_value=tk.StringVar(value='0.50')
+        self.expression_scale=tk.Scale(side,from_=0.25,to=1.0,resolution=0.01,bigincrement=0.01,
+            orient='horizontal',showvalue=False,variable=self.expression,command=self.expression_slid,
+            bg='#141e30',fg='#cad5e7',troughcolor='#2b3c56',activebackground='#b3a6ff',
+            highlightthickness=0,relief='flat',borderwidth=0,sliderrelief='flat',sliderlength=24,takefocus=True)
+        self.expression_scale.pack(fill='x',pady=(5,0))
+        captions=ttk.Frame(side,style='Card.TFrame');captions.pack(fill='x')
+        ttk.Label(captions,text='Rustiger',style='Muted.TLabel').pack(side='left')
+        ttk.Label(captions,text='Expressiever',style='Muted.TLabel').pack(side='right')
+        exact=ttk.Frame(side,style='Card.TFrame');exact.pack(fill='x',pady=(10,10))
+        ttk.Button(exact,text='−',width=3,command=lambda:self.set_expression(self.expression.get()-0.01)).pack(side='left')
+        self.expression_input=ttk.Spinbox(exact,from_=0.25,to=1.0,increment=0.01,format='%.2f',width=7,textvariable=self.expression_value,command=self.commit_expression)
+        self.expression_input.pack(side='left',fill='x',expand=True,padx=8)
+        self.expression_input.bind('<Return>',lambda event:self.commit_expression())
+        self.expression_input.bind('<FocusOut>',lambda event:self.commit_expression())
+        ttk.Button(exact,text='+',width=3,command=lambda:self.set_expression(self.expression.get()+0.01)).pack(side='right')
+        ttk.Label(side,text='Tip: begin met 0,65 voor meer expressie.',style='Muted.TLabel',wraplength=270).pack(anchor='w',pady=(0,12))
+        device_row=ttk.Frame(side,style='Card.TFrame');device_row.pack(fill='x',pady=(8,0))
+        ttk.Label(device_row,text='Rekenen',style='Card.TLabel').pack(side='left')
+        self.device=tk.StringVar(value='cuda')
+        ttk.Combobox(device_row,textvariable=self.device,values=['cuda','cpu'],state='readonly',width=8).pack(side='right')
+        ttk.Label(side,text='cuda = videokaart  ·  cpu = processor',style='Muted.TLabel').pack(anchor='w',pady=(8,0))
+        footer=ttk.Frame(outer,style='Card.TFrame',padding=16);footer.pack(fill='x',pady=(16,0))
+        action=ttk.Frame(footer,style='Card.TFrame');action.pack(fill='x')
+        self.button=ttk.Button(action,text='Maak voice-over',style='Primary.TButton',command=self.generate);self.button.pack(side='left')
+        self.listen_button=ttk.Button(action,text='Beluister resultaat',command=self.play_output,state='disabled');self.listen_button.pack(side='left',padx=10)
+        ttk.Button(action,text='Open uitvoermap',command=self.open_output).pack(side='right')
+        self.status=tk.StringVar(value='Klaar voor je volgende verhaal. Kies je stem en vul je script in.')
+        self.status_label=ttk.Label(footer,textvariable=self.status,style='Muted.TLabel',wraplength=1000)
+        self.status_label.pack(fill='x',pady=(14,8))
+        self.status_label.bind('<Configure>',lambda event:self.status_label.configure(wraplength=max(200,event.width-8)))
+        self.progress=ttk.Progressbar(footer,mode='indeterminate');self.progress.pack(fill='x')
+        window.after(100,self.poll)
+
+    def script_changed(self, event=None):
+        if event is not None and not self.text.edit_modified(): return
+        content=self.text.get('1.0','end-1c')
+        count=len(content.split())
+        minutes,seconds=divmod(round(count/150*60),60)
+        self.script_stats.set(f'{count} woorden  ·  {len(content)} tekens  ·  circa {minutes}:{seconds:02d} spreektijd')
+        self.text.edit_modified(False)
+
+    def save_draft(self):
+        try: (ROOT/'draft.txt').write_text(self.text.get('1.0','end-1c'),encoding='utf-8')
+        except OSError: pass
+
+    def import_text(self):
+        if self.busy: return
+        path=filedialog.askopenfilename(title='Open een script',filetypes=[('Tekstbestand','*.txt')])
+        if not path: return
+        try: content=Path(path).read_text(encoding='utf-8-sig')
+        except (OSError,UnicodeError) as exc:
+            messagebox.showerror('Tekst niet geopend',str(exc));return
+        self.text.delete('1.0','end');self.text.insert('1.0',content)
+        self.save_draft()
+
+    def open_output(self):
+        folder=ROOT/'output';folder.mkdir(exist_ok=True)
+        try: os.startfile(str(folder))
+        except OSError as exc: messagebox.showerror('Map niet geopend',str(exc))
+
+    def play_output(self):
+        if self.last_output and Path(self.last_output).is_file():
+            try: os.startfile(self.last_output)
+            except OSError as exc: messagebox.showerror('Audio niet geopend',str(exc))
 
     def set_expression(self, value):
         value = round(max(0.25, min(1.0, float(value))), 2)
@@ -152,6 +246,7 @@ class Studio:
         if self.busy:
             messagebox.showinfo('Nog bezig', 'Wacht tot de voice-over klaar is voordat je afsluit.')
             return
+        self.save_draft()
         self.window.destroy()
 
     def update(self):
@@ -162,6 +257,8 @@ class Studio:
         self.button.configure(state='disabled')
         self.update_button.configure(state='disabled')
         self.progress.start()
+        self.save_draft()
+        self.progress.configure(mode='indeterminate',value=0)
         self.status.set('Online naar updates zoeken…')
         threading.Thread(target=self.download_update, daemon=True).start()
 
@@ -217,7 +314,9 @@ class Studio:
         destination = filedialog.asksaveasfilename(initialdir=output_dir, defaultextension='.wav', filetypes=[('WAV audio','*.wav')])
         if not destination: return
         self.busy = True
+        self.save_draft()
         self.update_button.configure(state='disabled')
+        self.progress.configure(mode='indeterminate',value=0)
         self.button.configure(state='disabled'); self.progress.start()
         self.status.set('Model laden… De eerste keer kan dit enkele minuten duren.')
         threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get()), daemon=True).start()
@@ -264,7 +363,8 @@ class Studio:
                     audio.append(wav)
             torchaudio.save(destination, torch.cat(audio,dim=-1), self.model.sr)
             elapsed = time.perf_counter() - started
-            self.events.put(('done',f'{destination} ({elapsed:.1f} sec generatie; model laden niet meegerekend)'))
+            self.events.put(('output',destination))
+            self.events.put(('done',f'Opname klaar · {elapsed:.1f} sec generatie · {Path(destination).name}'))
         except Exception:
             error = traceback.format_exc()
             (ROOT/'error.log').write_text(error,encoding='utf-8')
@@ -274,7 +374,17 @@ class Studio:
         try:
             while True:
                 kind, value = self.events.get_nowait()
-                if kind == 'status': self.status.set(value); continue
+                if kind == 'output':
+                    self.last_output=value
+                    self.listen_button.configure(state='normal')
+                    continue
+                if kind == 'status':
+                    self.status.set(value)
+                    match=re.search(r'Fragment (\d+) van (\d+)',value)
+                    if match:
+                        self.progress.stop()
+                        self.progress.configure(mode='determinate',maximum=100,value=100*(int(match[1])-1)/max(1,int(match[2])))
+                    continue
                 self.busy = False; self.update_button.configure(state='normal'); self.progress.stop(); self.button.configure(state='normal')
                 if kind == 'update_ready':
                     try:
@@ -288,7 +398,9 @@ class Studio:
                 if kind == 'current':
                     self.status.set(value)
                     messagebox.showinfo('Update',value)
-                elif kind == 'done': self.status.set('Opgeslagen: '+value)
+                elif kind == 'done':
+                    self.status.set(value)
+                    self.progress.configure(mode='determinate',value=100)
                 else:
                     self.status.set('Er is een fout opgetreden. Details staan in error.log.')
                     messagebox.showerror('Generatie mislukt',value[-2200:])
@@ -299,4 +411,5 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
