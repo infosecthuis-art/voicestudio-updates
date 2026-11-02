@@ -41,6 +41,22 @@ def filelist_for(experiment):
  if len(rows)<5:raise RuntimeError('Minder dan vijf bruikbare trainingsfragmenten. Controleer preprocess/extractielog.')
  return rows
 
+
+def module_command(args):
+ """Run upstream entry points as packages so train/train.py cannot shadow train."""
+ args=[str(x) for x in args]
+ entries={
+  'train/preprocess.py':'train.preprocess',
+  'train/dataset/extract_f0.py':'train.dataset.extract_f0',
+  'train/dataset/extract_hubert_feature.py':'train.dataset.extract_hubert_feature',
+  'train/train.py':'train.train',
+  'train/train_index.py':'train.train_index',
+  'infer/cli.py':'infer.cli',
+ }
+ if len(args)>1 and args[1].replace('\\','/') in entries:
+  return [args[0],'-m',entries[args[1].replace('\\','/')],*args[2:]]
+ return args
+
 class Manager:
  def __init__(self,root):
   self.root=root;self.events=queue.Queue();self.process=None;self.busy=False;self.cancel=threading.Event()
@@ -85,6 +101,7 @@ class Manager:
   for argument in args:
    if str(argument) in stages:self.events.put(('status',stages[str(argument)]))
   if self.cancel.is_set():raise RuntimeError('Gestopt door gebruiker')
+  args=module_command(args)
   with open(HOME/'setup-training.log','a',encoding='utf-8') as log:
    self.process=subprocess.Popen([str(x) for x in args],cwd=str(cwd or CODE),env=ENVIRON,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
    for line in self.process.stdout:
@@ -218,3 +235,4 @@ class Manager:
 
 if __name__=='__main__':
  root=tk.Tk();Manager(root);root.mainloop()
+
