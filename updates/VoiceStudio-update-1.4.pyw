@@ -1,0 +1,50 @@
+"""VoiceStudio 1.4 installer: stdlib only, preserves models/settings/environment."""
+import base64, zlib, json, os, sys, subprocess, datetime, ast, time
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox, filedialog
+PAYLOAD = "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"
+
+def main():
+    root=tk.Tk(); root.withdraw()
+    target=Path(sys.argv[1]) if len(sys.argv)>1 else Path(r'D:\VoiceStudio')
+    if not (target/'.venv/Scripts/python.exe').is_file():
+        choice=filedialog.askdirectory(title='Selecteer je bestaande VoiceStudio-map')
+        if not choice: return
+        target=Path(choice)
+    if not (target/'studio.py').is_file() or not (target/'.venv/Scripts/python.exe').is_file():
+        messagebox.showerror('Studio niet gevonden','Selecteer de bestaande map met studio.py en .venv.'); return
+    automatic = '--automatic' in sys.argv
+    if automatic: time.sleep(1)
+    if not automatic and not messagebox.askokcancel('VoiceStudio bijwerken',f'Sluit eerst de studio en wacht tot alle opnames klaar zijn.\n\nUpdate 1.4 installeren in:\n{target}\n\nJe stem, modellen, instellingen en audio blijven bewaard. Er wordt een reservekopie van de gewijzigde bestanden gemaakt.'):
+        return
+    previous={}
+    try:
+        files=json.loads(zlib.decompress(base64.b64decode(PAYLOAD)))
+        ast.parse(files['studio.py'])
+        stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+        backup=target/'backups'/stamp; backup.mkdir(parents=True)
+        for name in files:
+            dest=target/name
+            previous[name]=dest.read_bytes() if dest.exists() else None
+            if previous[name] is not None: (backup/name).write_bytes(previous[name])
+        for name, text in files.items():
+            dest=target/name
+            temporary=target/(name+'.new')
+            temporary.write_text(text,encoding='utf-8')
+            os.replace(temporary,dest)
+    except Exception as exc:
+        for name, data in previous.items():
+            try:
+                if data is not None: (target/name).write_bytes(data)
+                else: (target/name).unlink(missing_ok=True)
+            except OSError: pass
+        messagebox.showerror('Update mislukt',str(exc)+'\nReservekopie: '+str(target/'backups'))
+        return
+    if automatic or messagebox.askyesno('Update klaar','VoiceStudio 1.4 is geïnstalleerd. Nu openen?'):
+        subprocess.Popen([str(target/'.venv/Scripts/pythonw.exe'),str(target/'studio.py')],cwd=target)
+    root.destroy()
+
+if __name__=='__main__':
+    main()
+
