@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import hashlib
-VERSION = "1.8"
+VERSION = "1.9"
 UPDATE_BASE = "https://raw.githubusercontent.com/infosecthuis-art/voicestudio-updates/main/"
 if sys.stdout is None or sys.stderr is None:
     log_stream = open(ROOT/'runtime.log', 'a', encoding='utf-8', buffering=1)
@@ -115,6 +115,34 @@ def preview_script(text, limit=25):
     if not tokens:return ''
     return text[:tokens[min(limit,len(tokens))-1].end()].strip()
 
+
+def rvc_voice():
+    state=ROOT/'rvc/voice.json'
+    if not state.is_file():raise RuntimeError('Er is nog geen getraind RVC-model. Open RVC-stemmodel en voer de drie stappen uit.')
+    voice=json.loads(state.read_text(encoding='utf-8'))
+    for key in ('model','index'):
+        if not Path(voice.get(key,'')).is_file():raise RuntimeError('Het getrainde RVC-model of de index ontbreekt. Open RVC-stemmodel.')
+    return voice
+
+def convert_rvc(destination, index_rate):
+    import shutil
+    voice=rvc_voice();engine=ROOT/'rvc/engine';python=ROOT/'rvc/.venv/Scripts/python.exe'
+    if not python.is_file():raise RuntimeError('De aparte RVC-omgeving ontbreekt.')
+    folder=ROOT/'cache/rvc-conversion';folder.mkdir(parents=True,exist_ok=True)
+    source=folder/('tts-'+str(time.time_ns())+'.wav');shutil.copyfile(destination,source)
+    env=os.environ.copy()
+    env.update({'HF_HOME':str(ROOT/'rvc/cache/huggingface'),'TORCH_HOME':str(ROOT/'rvc/cache/torch'),
+                'TEMP':str(ROOT/'rvc/tmp'),'TMP':str(ROOT/'rvc/tmp'),'PYTHONIOENCODING':'utf-8',
+                'PYTHONPATH':str(engine),'weight_root':str(engine/'assets/weights'),
+                'index_root':str(engine/'assets/indices'),'rmvpe_root':str(engine/'assets/rmvpe')})
+    env['PATH']=str(engine)+os.pathsep+env.get('PATH','')
+    with open(ROOT/'rvc/conversion.log','w',encoding='utf-8') as log:
+        result=subprocess.run([str(python),'infer/cli.py','--model',voice['model'],'--index',voice['index'],
+            '--input',str(source),'--output',str(destination),'--index-rate',str(index_rate),'--f0-method','rmvpe','--overwrite'],
+            cwd=engine,env=env,stdout=log,stderr=subprocess.STDOUT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    if result.returncode:raise RuntimeError('RVC-conversie mislukt. Je oorspronkelijke TTS staat in '+str(source)+'; details in rvc/conversion.log.')
+    source.unlink(missing_ok=True)
+
 class Studio:
     def __init__(self, window):
         self.window = window
@@ -125,7 +153,7 @@ class Studio:
         self.busy = False
         self.last_output = None
         self.last_preview = None
-        window.title('VoiceStudio 1.8 — Jouw voice-overstudio')
+        window.title('VoiceStudio 1.9 — Jouw voice-overstudio')
         window.geometry('1160x800')
         window.minsize(980, 700)
         window.configure(bg='#0b1120')
@@ -160,7 +188,7 @@ class Studio:
         ttk.Label(branding,text='VoiceStudio',font=('Segoe UI',26,'bold')).pack(anchor='w')
         ttk.Label(branding,text='Jouw verhaal. Jouw vaste stem.',foreground='#a7b6cc').pack(anchor='w',pady=(3,0))
         self.update_button = ttk.Button(header,text='Update',command=self.update); self.update_button.pack(side='right')
-        ttk.Label(header,text='LOKAAL  •  v1.8',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
+        ttk.Label(header,text='LOKAAL  •  v1.9',foreground='#a7b6cc',font=('Segoe UI',9)).pack(side='right',padx=18)
         body = ttk.Frame(outer); body.pack(fill='both',expand=True)
         body.columnconfigure(0,weight=1); body.columnconfigure(1,weight=0,minsize=310); body.rowconfigure(0,weight=1)
         editor = ttk.Frame(body,style='Card.TFrame',padding=18); editor.grid(row=0,column=0,sticky='nsew',padx=(0,16))
@@ -245,6 +273,14 @@ class Studio:
             entry.bind('<FocusOut>',lambda event:self.commit_sound_controls())
             ttk.Label(side,text=caption,style='Muted.TLabel',wraplength=265).pack(anchor='w')
         ttk.Button(side,text='Standaardinstellingen',command=self.reset_controls).pack(fill='x',pady=(14,4))
+        ttk.Separator(side).pack(fill='x',pady=(14,8))
+        self.rvc_enabled=tk.BooleanVar(value=False)
+        self.rvc_index=tk.DoubleVar(value=0.75)
+        ttk.Checkbutton(side,text='Getrainde RVC-stem toepassen',variable=self.rvc_enabled,command=self.check_rvc).pack(anchor='w')
+        ttk.Label(side,text='Opnamekenmerken (RVC-index)',style='Card.TLabel').pack(anchor='w',pady=(8,0))
+        tk.Scale(side,from_=0,to=1,resolution=0.05,orient='horizontal',variable=self.rvc_index,
+            bg='#141e30',fg='#cad5e7',troughcolor='#2b3c56',highlightthickness=0).pack(fill='x')
+        ttk.Label(side,text='Pas beschikbaar na training. Hogere index volgt kenmerken uit de trainingsopname sterker; dit is geen ElevenLabs-kloonkracht.',style='Muted.TLabel',wraplength=265).pack(anchor='w')
         device_row=ttk.Frame(side,style='Card.TFrame');device_row.pack(fill='x',pady=(8,0))
         ttk.Label(device_row,text='Rekenen',style='Card.TLabel').pack(side='left')
         self.device=tk.StringVar(value='cuda')
@@ -265,6 +301,25 @@ class Studio:
         self.restore_controls(preferences)
         window.after(100,self.poll)
 
+    def open_rvc(self):
+        if self.busy:
+            messagebox.showinfo('Nog bezig','Laat de huidige opname eerst afronden.');return
+        self.save_draft();self.stop_preview()
+        try:
+            python=ROOT/'.venv/Scripts/pythonw.exe'
+            subprocess.Popen([str(python),str(ROOT/'rvc_manager.py')],cwd=ROOT)
+        except OSError as exc:
+            messagebox.showerror('RVC niet geopend',str(exc));return
+        self.window.destroy()
+
+    def check_rvc(self):
+        if self.rvc_enabled.get():
+            try:rvc_voice()
+            except Exception as exc:
+                self.rvc_enabled.set(False)
+                messagebox.showinfo('RVC-model nodig',str(exc))
+        self.save_preferences()
+
     def restore_controls(self, preferences):
         import math
         for key,var,display,default,low,high,fmt in [
@@ -276,6 +331,9 @@ class Studio:
                 if not math.isfinite(value): value=default
             except (ValueError,TypeError): value=default
             value=max(low,min(high,value));var.set(value);display.set(fmt % value)
+        self.rvc_enabled.set(bool(preferences.get('rvc_enabled',False)) and (ROOT/'rvc/voice.json').is_file())
+        try: self.rvc_index.set(max(0,min(1,float(preferences.get('rvc_index',0.75)))))
+        except (TypeError,ValueError): self.rvc_index.set(0.75)
         self.multi_reference.set(bool(preferences.get('multi_reference',False)))
         self.storyteller.set(bool(preferences.get('storyteller',False)))
         device=preferences.get('device','cuda')
@@ -311,6 +369,8 @@ class Studio:
     def reset_controls(self):
         self.set_expression(0.5)
         self.storyteller.set(False)
+        self.rvc_enabled.set(False)
+        self.rvc_index.set(0.75)
         self.volume.set(100.0);self.volume_value.set('100')
         self.variation.set(0.8);self.variation_value.set('0.80')
         self.save_preferences()
@@ -319,7 +379,7 @@ class Studio:
         try:
             settings={'reference':self.reference.get(),'expression':self.expression.get(),
                       'volume':self.volume.get(),'variation':self.variation.get(),
-                      'device':self.device.get(),'multi_reference':self.multi_reference.get(),'storyteller':self.storyteller.get()}
+                      'device':self.device.get(),'multi_reference':self.multi_reference.get(),'storyteller':self.storyteller.get(),'rvc_enabled':self.rvc_enabled.get(),'rvc_index':self.rvc_index.get()}
             temporary=ROOT/'settings.json.new'
             temporary.write_text(json.dumps(settings),encoding='utf-8')
             os.replace(temporary,ROOT/'settings.json')
@@ -338,7 +398,7 @@ class Studio:
             messagebox.showinfo('Tekst ontbreekt','Vul eerst Engelse tekst in.'); return
         sample=preview_script(text,limit=25)
         stat=Path(reference).stat()
-        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get(),self.volume.get(),self.variation.get(),self.storyteller.get()]).encode()).hexdigest()[:24]
+        key=hashlib.sha256(json.dumps([VERSION,sample,str(Path(reference).resolve()),stat.st_mtime_ns,stat.st_size,self.expression.get(),self.device.get(),self.multi_reference.get(),self.volume.get(),self.variation.get(),self.storyteller.get(),self.rvc_enabled.get(),self.rvc_index.get(),(ROOT/'rvc/voice.json').stat().st_mtime_ns if (ROOT/'rvc/voice.json').exists() else 0]).encode()).hexdigest()[:24]
         folder=ROOT/'cache'/'previews';folder.mkdir(parents=True,exist_ok=True)
         destination=folder/(key+'.wav')
         if destination.is_file() and destination.with_suffix('.ready').is_file():
@@ -351,7 +411,7 @@ class Studio:
         self.button.configure(state='disabled');self.preview_button.configure(state='disabled');self.update_button.configure(state='disabled')
         self.progress.configure(mode='indeterminate',value=0);self.progress.start()
         self.status.set('Kort luistervoorbeeld maken… De eerste keer moet het model laden.')
-        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview',self.volume.get(),self.variation.get(),self.storyteller.get()),daemon=True).start()
+        threading.Thread(target=self.worker,args=(sample,reference,str(destination),self.device.get(),self.expression.get(),self.multi_reference.get(),'preview',self.volume.get(),self.variation.get(),self.storyteller.get(),self.rvc_enabled.get(),self.rvc_index.get()),daemon=True).start()
 
     def play_preview(self):
         try:
@@ -500,9 +560,9 @@ class Studio:
         self.stop_preview()
         self.button.configure(state='disabled'); self.progress.start()
         self.status.set('Model laden… De eerste keer kan dit enkele minuten duren.')
-        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get(),'full',self.volume.get(),self.variation.get(),self.storyteller.get()), daemon=True).start()
+        threading.Thread(target=self.worker, args=(text,reference,destination,self.device.get(),self.expression.get(),self.multi_reference.get(),'full',self.volume.get(),self.variation.get(),self.storyteller.get(),self.rvc_enabled.get(),self.rvc_index.get()), daemon=True).start()
 
-    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full", volume=100.0, variation=0.8, storyteller=False):
+    def worker(self, text, reference, destination, device, expression, multi_reference=False, job_type="full", volume=100.0, variation=0.8, storyteller=False, use_rvc=False, rvc_index=0.75):
         try:
             if multi_reference:
                 self.events.put(('status', 'Drie plekken uit de opname verzamelen…'))
@@ -539,6 +599,11 @@ class Studio:
                     if audio: audio.append(torch.zeros(wav.shape[0], int(self.model.sr*plan[i][1])))
                     audio.append(wav)
             torchaudio.save(destination, apply_volume(torch.cat(audio,dim=-1),volume), self.model.sr)
+            if use_rvc:
+                self.events.put(('status','Getrainde RVC-stem toepassen…'))
+                self.model=None;self.loaded_device=None;self.condition_key=None
+                if torch.cuda.is_available():torch.cuda.empty_cache()
+                convert_rvc(destination,rvc_index)
             elapsed = time.perf_counter() - started
             if job_type == 'preview':
                 Path(destination).with_suffix('.ready').write_text('complete',encoding='utf-8')
@@ -597,6 +662,7 @@ if __name__ == '__main__':
     root = tk.Tk()
     Studio(root)
     root.mainloop()
+
 
 
 
